@@ -1,26 +1,34 @@
-@import "tailwindcss";
-
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: #050505;
+  color: #e5e5e5;
+  font-family: sans-serif;
+}
+
+@keyframes soft-reveal {
+  0%, 100% { opacity: 0.88; filter: grayscale(1) drop-shadow(0 0 14px rgba(255, 255, 255, 0.12)); }
+  50% { opacity: 1; filter: grayscale(1) drop-shadow(0 0 24px rgba(255, 255, 255, 0.22)); }
+}
+
+.animate-glow {
+  animation: soft-reveal 4s ease-in-out infinite;
+}
+
+@keyframes view-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.view-enter {
+  animation: view-enter 320ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .view-enter,
+  .animate-glow {
+    animation: none;
+  }
 }
