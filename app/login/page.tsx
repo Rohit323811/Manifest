@@ -30,8 +30,16 @@ export default function LoginPage() {
         if (loginError) throw loginError;
         router.push("/console");
       } else {
-        const { error: signUpError } = await supabase.auth.signUp({ email, password });
+        const { data, error: signUpError } = await supabase.auth.signUp({
+          email,
+          password,
+          options: { emailRedirectTo: `${window.location.origin}/console` },
+        });
         if (signUpError) throw signUpError;
+        if (data.session) {
+          router.push("/console");
+          return;
+        }
         setSuccessMsg("Account created! Please check your email to verify, or try logging in.");
         setIsLogin(true);
       }
