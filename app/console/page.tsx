@@ -212,10 +212,10 @@ export default function Home() {
         body: JSON.stringify({ prompt }),
       });
       const responseText = await response.text();
-      let result: { images?: string[]; error?: string };
+      let result: { images?: string[]; credits?: number; error?: string };
 
       try {
-        result = JSON.parse(responseText) as { images?: string[]; error?: string };
+        result = JSON.parse(responseText) as { images?: string[]; credits?: number; error?: string };
       } catch {
         const isHtml = responseText.trimStart().startsWith("<");
         throw new Error(
@@ -229,20 +229,13 @@ export default function Home() {
       const nextImages = result.images ?? [];
       if (nextImages.length === 0) throw new Error("No images were returned. Try another prompt.");
 
-      if (!supabase) throw new Error("Supabase is not configured.");
-      const newCredits = credits - 5;
-      const { data: updatedProfile, error: updateError } = await supabase
-        .from("profiles")
-        .update({ credits: newCredits })
-        .eq("id", session.user.id)
-        .eq("credits", credits)
-        .select("credits")
-        .maybeSingle();
-      if (updateError || !updatedProfile || typeof updatedProfile.credits !== "number") {
-        throw new Error("Could not update your credits. Refresh your balance and try again.");
+      // The server reserves credits atomically before generation and refunds on failure.
+      // Never debit the profile from the browser after receiving the image.
+      if (typeof result.credits !== "number") {
+        throw new Error("Image generated, but the updated credit balance was not returned. Refresh your balance.");
       }
 
-      setCredits(updatedProfile.credits);
+      setCredits(result.credits);
       setImages((current) => [...nextImages, ...current]);
       generationSucceededRef.current = true;
     } catch (generationError) {
