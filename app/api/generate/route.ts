@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 
 export const maxDuration = 60;
@@ -14,9 +14,11 @@ interface CloudflareResponse {
   result?: { image?: unknown };
 }
 
+type AdminClient = SupabaseClient<any>;
+
 type CreditAccess =
   | { response: NextResponse }
-  | { admin: ReturnType<typeof createClient>; userId: string; credits: number };
+  | { admin: AdminClient; userId: string; credits: number };
 
 async function getAuthenticatedCredits(request: Request): Promise<CreditAccess> {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -59,7 +61,7 @@ async function getAuthenticatedCredits(request: Request): Promise<CreditAccess> 
   }
 }
 
-async function refundCredits(admin: ReturnType<typeof createClient>, userId: string) {
+async function refundCredits(admin: AdminClient, userId: string) {
   const { error } = await admin.rpc("refund_profile_credits", {
     p_user_id: userId,
     p_amount: CREDIT_COST,
