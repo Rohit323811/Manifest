@@ -59,12 +59,13 @@ export async function POST(request: Request) {
 
     const { data: pendingPayment, error: pendingError } = await admin
       .from("credit_payments")
-      .select("payment_link_id")
+      .select("payment_link_id, short_url")
       .eq("user_id", authData.user.id)
       .eq("status", "created")
       .maybeSingle();
 
     if (pendingError) return jsonError("Could not load the pending payment.", 503);
+    if (pendingPayment?.short_url) return NextResponse.json({ short_url: pendingPayment.short_url });
 
     const referenceId = randomUUID().replace(/-/g, "").substring(0, 30);
     const razorpay = new Razorpay({ key_id: keyId, key_secret: keySecret });
@@ -95,15 +96,7 @@ export async function POST(request: Request) {
       status: "created",
     };
 
-    const writeResult = pendingPayment
-      ? await admin
-          .from("credit_payments")
-          .update(paymentRecord)
-          .eq("user_id", authData.user.id)
-          .eq("status", "created")
-          .select("reference_id, payment_link_id")
-          .maybeSingle()
-      : await admin.from("credit_payments").insert(paymentRecord).select("reference_id, payment_link_id").single();
+    const writeResult = await admin.from("credit_payments").insert(paymentRecord).select("reference_id, payment_link_id").single();
 
     if (
       writeResult.error ||
