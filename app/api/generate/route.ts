@@ -3,23 +3,26 @@ import { NextResponse } from "next/server";
 
 export const maxDuration = 60;
 
-const BLOCKED_TERMS = /\b(nsfw|nude|explicit|gore)\b/i;
+const BLOCKED_TERMS = /\\b(nsfw|nude|explicit|gore)\\b/i;
 const CLOUDFLARE_API = "https://api.cloudflare.com/client/v4";
 const SAFETY_ERROR = "The generation server flagged this prompt as a false positive. Please try again or add more descriptive words (e.g., 'A photo of...').";
 const TEMPORARY_ERROR = "Our generation servers are currently experiencing high traffic. Please try again in a few minutes.";
+const CREDIT_COST = 5;
 
 interface CloudflareResponse {
   success?: boolean;
   result?: { image?: unknown };
 }
 
-type CreditAccess = { credits: number } | { response: NextResponse };
+type CreditAccess =
+  | { response: NextResponse }
+  | { admin: ReturnType<typeof createClient>; userId: string; credits: number };
 
 async function getAuthenticatedCredits(request: Request): Promise<CreditAccess> {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const accessToken = request.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
+  const accessToken = request.headers.get("authorization")?.match(/^Bearer\\s+(.+)$/i)?.[1];
 
   if (!url || !anonKey || !serviceRoleKey) {
     return { response: NextResponse.json({ error: TEMPORARY_ERROR }, { status: 503 }) };
@@ -50,10 +53,23 @@ async function getAuthenticatedCredits(request: Request): Promise<CreditAccess> 
       return { response: NextResponse.json({ error: TEMPORARY_ERROR }, { status: 503 }) };
     }
 
-    return { credits: profile.credits };
+    return { admin, userId: authData.user.id, credits: profile.credits };
   } catch {
     return { response: NextResponse.json({ error: TEMPORARY_ERROR }, { status: 503 }) };
   }
+}
+
+async function refundCredits(admin: ReturnType<typeof createClient>, userId: string) {
+  const { error } = await admin.rpc("refund_profile_credits", {
+    p_user_id: userId,
+    p_amount: CREDIT_COST,
+  });
+  if (error) {
+    // Keep this error visible so a failed refund can be reconciled from server logs.
+    console.error("IMAGE GENERATION CREDIT REFUND FAILED", { userId, error });
+    return false;
+  }
+  return true;
 }
 
 export async function POST(request: Request) {
@@ -78,16 +94,30 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: SAFETY_ERROR }, { status: 400 });
   }
 
-  const creditAccess = await getAuthenticatedCredits(request);
-  if ("response" in creditAccess) return creditAccess.response;
-  if (creditAccess.credits < 5) {
-    return NextResponse.json({ error: "You need at least 5 credits to generate an image." }, { status: 402 });
-  }
-
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
   const token = process.env.CLOUDFLARE_API_TOKEN;
   if (!accountId || !token) {
     return NextResponse.json({ error: TEMPORARY_ERROR }, { status: 503 });
+  }
+
+  const creditAccess = await getAuthenticatedCredits(request);
+  if ("response" in creditAccess) return creditAccess.response;
+  if (creditAccess.credits < CREDIT_COST) {
+    return NextResponse.json({ error: "You need at least 5 credits to generate an image." }, { status: 402 });
+  }
+
+  // Debit atomically before calling the paid generation provider. A profile read alone
+  // is not sufficient: concurrent requests could otherwise spend the same credits.
+  const { data: remainingCredits, error: debitError } = await creditAccess.admin.rpc("deduct_profile_credits", {
+    p_user_id: creditAccess.userId,
+    p_amount: CREDIT_COST,
+  });
+  if (debitError) {
+    console.error("IMAGE GENERATION CREDIT RESERVATION FAILED", debitError);
+    return NextResponse.json({ error: "Could not reserve credits. Please try again." }, { status: 503 });
+  }
+  if (typeof remainingCredits !== "number") {
+    return NextResponse.json({ error: "You need at least 5 credits to generate an image." }, { status: 402 });
   }
 
   try {
@@ -111,24 +141,46 @@ export async function POST(request: Request) {
       /nsfw|safety|blocked|flagged/i.test(responseText);
 
     if (isSafetyViolation) {
-      return NextResponse.json({ error: SAFETY_ERROR }, { status: 400 });
+      const refunded = await refundCredits(creditAccess.admin, creditAccess.userId);
+      return NextResponse.json(
+        { error: refunded ? SAFETY_ERROR : "Generation was blocked and your credit refund is being investigated." },
+        { status: 400 },
+      );
     }
 
-    if (response.status === 429 || response.status === 500 || !response.ok) {
+    if (!response.ok) {
+      const refunded = await refundCredits(creditAccess.admin, creditAccess.userId);
+      return NextResponse.json(
+        { error: refunded ? TEMPORARY_ERROR : "Generation failed and your credit refund is being investigated." },
+        { status: 503 },
+      );
+    }
+
+    let data: CloudflareResponse;
+    try {
+      data = JSON.parse(responseText) as CloudflareResponse;
+    } catch {
+      await refundCredits(creditAccess.admin, creditAccess.userId);
       return NextResponse.json({ error: TEMPORARY_ERROR }, { status: 503 });
     }
 
-    const data = JSON.parse(responseText) as CloudflareResponse;
-    if (!data.success) {
-      return NextResponse.json({ error: TEMPORARY_ERROR }, { status: 503 });
+    if (!data.success || typeof data.result?.image !== "string" || !data.result.image) {
+      const refunded = await refundCredits(creditAccess.admin, creditAccess.userId);
+      return NextResponse.json(
+        { error: refunded ? TEMPORARY_ERROR : "Generation failed and your credit refund is being investigated." },
+        { status: 503 },
+      );
     }
 
-    if (typeof data.result?.image !== "string" || !data.result.image) {
-      return NextResponse.json({ error: TEMPORARY_ERROR }, { status: 503 });
-    }
-
-    return NextResponse.json({ images: [`data:image/jpeg;base64,${data.result.image}`] });
+    return NextResponse.json({
+      images: [`data:image/jpeg;base64,${data.result.image}`],
+      credits: remainingCredits,
+    });
   } catch {
-    return NextResponse.json({ error: TEMPORARY_ERROR }, { status: 503 });
+    const refunded = await refundCredits(creditAccess.admin, creditAccess.userId);
+    return NextResponse.json(
+      { error: refunded ? TEMPORARY_ERROR : "Generation failed and your credit refund is being investigated." },
+      { status: 503 },
+    );
   }
 }
