@@ -57,6 +57,7 @@ export async function POST(request: Request) {
     if (profileError || !profile) return jsonError("Credit profile is unavailable.", 404);
     if (profile.credits >= 5) return jsonError("You still have credits available.", 409);
 
+    const razorpay = new Razorpay({ key_id: keyId, key_secret: keySecret });
     const { data: pendingPayment, error: pendingError } = await admin
       .from("credit_payments")
       .select("payment_link_id, short_url")
@@ -65,10 +66,29 @@ export async function POST(request: Request) {
       .maybeSingle();
 
     if (pendingError) return jsonError("Could not load the pending payment.", 503);
-    if (pendingPayment?.short_url) return NextResponse.json({ short_url: pendingPayment.short_url });
+    if (pendingPayment?.short_url) {
+      const existingLink = await razorpay.paymentLink.fetch(pendingPayment.payment_link_id);
+      if (
+        existingLink.status === "created" &&
+        Number(existingLink.amount) === 10000 &&
+        existingLink.currency === "INR"
+      ) {
+        return NextResponse.json({ short_url: pendingPayment.short_url });
+      }
+      if (existingLink.status === "paid") {
+        return jsonError("Your payment is being confirmed. Refresh your credits in a moment.", 409);
+      }
+
+      const { error: removeError } = await admin
+        .from("credit_payments")
+        .delete()
+        .eq("user_id", authData.user.id)
+        .eq("payment_link_id", pendingPayment.payment_link_id)
+        .eq("status", "created");
+      if (removeError) return jsonError("Could not refresh the expired payment link.", 503);
+    }
 
     const referenceId = randomUUID().replace(/-/g, "").substring(0, 30);
-    const razorpay = new Razorpay({ key_id: keyId, key_secret: keySecret });
     const metadata = authData.user.user_metadata ?? {};
     const customerName =
       (typeof metadata.full_name === "string" && metadata.full_name) ||
