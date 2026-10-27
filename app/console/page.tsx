@@ -189,10 +189,17 @@ export default function Home() {
   const handleGenerate = async () => {
     if (!prompt.trim() || loading) return;
     if (authLoading) return;
-    if (!session) {
+    if (!supabase) {
+      setError("Authentication is not configured.");
+      return;
+    }
+
+    const { data: { session: currentSession }, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError || !currentSession) {
       router.push("/login");
       return;
     }
+    setSession(currentSession);
     if (credits === null || credits < 5) {
       setError("You need at least 5 credits to generate an image.");
       return;
@@ -207,7 +214,7 @@ export default function Home() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${session.access_token}`,
+          Authorization: `Bearer ${currentSession.access_token}`,
         },
         body: JSON.stringify({ prompt }),
       });
@@ -234,7 +241,7 @@ export default function Home() {
       const { data: updatedProfile, error: updateError } = await supabase
         .from("profiles")
         .update({ credits: newCredits })
-        .eq("id", session.user.id)
+        .eq("id", currentSession.user.id)
         .eq("credits", credits)
         .select("credits")
         .maybeSingle();
